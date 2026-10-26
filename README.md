@@ -37,6 +37,8 @@ Full ids (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fa
 
 Each call returns the result text, a `session_id`, the model that ran, and an estimated cost. Pass that `session_id` as `resume` to continue the same session. `max_budget_usd` stops the run at an estimated spend from 0.25 to 8 (default 1.5 for read, 4 for edit and shell). `timeout_sec` is the wall clock limit from 30 to 300 (default 180).
 
+While the session runs, the server sends a progress update every 15 seconds. Clients such as Cursor reset their idle timer on that update, so a quiet review can finish instead of being dropped at 2 minutes. If the caller cancels, the Claude process is stopped.
+
 The parent approves this one MCP call. After the process starts, Cursor does not see each file read or edit. Those follow the fence above.
 
 ## Setup

@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import test, { mock } from "node:test";
 import {
   assertClaudeVersion,
   buildClaudeArgs,
   parseClaudeResult,
+  PROGRESS_INTERVAL_MS,
   resolveModelId,
+  runClaude,
+  spawnClaude,
+  startProgressHeartbeat,
   stripBillingEnv,
 } from "./claude-run.mjs";
 
@@ -42,10 +52,7 @@ test("read mode cannot name Bash, Edit, or bypass", () => {
     args[args.indexOf("--tools") + 1],
     "Read,Grep,Glob,WebFetch,WebSearch"
   );
-  assert.equal(
-    args[args.indexOf("--allowedTools") + 1],
-    "WebFetch,WebSearch"
-  );
+  assert.equal(args[args.indexOf("--allowedTools") + 1], "WebFetch,WebSearch");
   assert.equal(args.includes("bypassPermissions"), false);
   assert.equal(args.includes("--bare"), false);
   assert.equal(args.includes("--dangerously-skip-permissions"), false);
@@ -66,10 +73,7 @@ test("edit mode adds file writes and still omits Bash", () => {
     args[args.indexOf("--tools") + 1],
     "Read,Grep,Glob,Edit,Write,WebFetch,WebSearch"
   );
-  assert.equal(
-    args[args.indexOf("--allowedTools") + 1],
-    "WebFetch,WebSearch"
-  );
+  assert.equal(args[args.indexOf("--allowedTools") + 1], "WebFetch,WebSearch");
   assert.equal(
     args[args.indexOf("--resume") + 1],
     "8898fedb-1457-4c8f-ba3a-4172f100c3bd"
@@ -120,3 +124,226 @@ test("parses a JSON result and a noisy prefix", () => {
   assert.equal(noisy.resultText, "beta");
   assert.equal(noisy.isError, true);
 });
+
+test("progress heartbeat repeats inside the 120s idle window and then stops", async () => {
+  assert.ok(PROGRESS_INTERVAL_MS > 0);
+  assert.ok(PROGRESS_INTERVAL_MS < 120_000);
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const sent = [];
+    const stop = startProgressHeartbeat({
+      progressToken: 7,
+      intervalMs: PROGRESS_INTERVAL_MS,
+      sendNotification: (notification) => {
+        sent.push(notification);
+      },
+    });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].method, "notifications/progress");
+    assert.equal(sent[0].params.progressToken, 7);
+    assert.equal(sent[0].params.progress, 1);
+    assert.equal(sent[0].params.message, "Claude Code is still running");
+    mock.timers.tick(PROGRESS_INTERVAL_MS);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].params.progress, 2);
+    stop();
+    mock.timers.tick(PROGRESS_INTERVAL_MS);
+    assert.equal(sent.length, 2);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("progress heartbeat ignores a missing token and a failed send", () => {
+  const stop = startProgressHeartbeat({
+    sendNotification: () => {
+      throw new Error("no listener");
+    },
+  });
+  stop();
+  const sent = [];
+  const stopAgain = startProgressHeartbeat({
+    progressToken: "",
+    sendNotification: (notification) => sent.push(notification),
+  });
+  stopAgain();
+  assert.equal(sent.length, 0);
+  assert.doesNotThrow(() => {
+    const stopThrow = startProgressHeartbeat({
+      progressToken: 4,
+      intervalMs: 60_000,
+      sendNotification: () => {
+        throw new Error("closed");
+      },
+    });
+    stopThrow();
+  });
+});
+
+test("timeout and cancel both stop the child", async () => {
+  const hanging = [process.execPath, ["-e", "setInterval(() => {}, 1000)"]];
+  const timed = await spawnClaude({
+    bin: hanging[0],
+    args: hanging[1],
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMs: 200,
+  });
+  assert.equal(timed.timedOut, true);
+  assert.equal(timed.cancelled, false);
+
+  const ac = new AbortController();
+  const pending = spawnClaude({
+    bin: hanging[0],
+    args: hanging[1],
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMs: 30_000,
+    signal: ac.signal,
+  });
+  setTimeout(() => ac.abort(), 50);
+  const cancelled = await pending;
+  assert.equal(cancelled.cancelled, true);
+  assert.equal(cancelled.timedOut, false);
+
+  ac.abort();
+  const already = await spawnClaude({
+    bin: hanging[0],
+    args: hanging[1],
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMs: 30_000,
+    signal: ac.signal,
+  });
+  assert.equal(already.cancelled, true);
+});
+
+test("runClaude stops the child when the caller aborts", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-subagent-"));
+  const started = path.join(dir, "started");
+  const bin = path.join(dir, "claude");
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require("fs");
+if (process.argv[2] === "--version") {
+  console.log("2.1.310 (Claude Code)");
+  process.exit(0);
+}
+fs.writeFileSync(process.env.STARTED_FILE, String(process.pid));
+setInterval(() => {}, 1000);
+`
+  );
+  chmodSync(bin, 0o755);
+  const ac = new AbortController();
+  try {
+    const pending = runClaude(
+      { prompt: "review", cwd: dir, timeout_sec: 30 },
+      {
+        env: { ...process.env, CLAUDE_BIN: bin, STARTED_FILE: started },
+        signal: ac.signal,
+      }
+    );
+    const pid = await waitForFile(started);
+    ac.abort();
+    const run = await pending;
+    assert.equal(run.cancelled, true);
+    assert.equal(run.timedOut, false);
+    assert.equal(processAlive(Number(pid)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an MCP call reports progress before the Claude result", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-subagent-mcp-"));
+  const bin = path.join(dir, "claude");
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+if (process.argv[2] === "--version") {
+  console.log("2.1.310 (Claude Code)");
+  process.exit(0);
+}
+setTimeout(() => {
+  console.log(JSON.stringify({
+    type: "result",
+    result: "pong",
+    is_error: false,
+    session_id: "8898fedb-1457-4c8f-ba3a-4172f100c3bd",
+    total_cost_usd: 0,
+    num_turns: 1
+  }));
+  process.exit(0);
+}, 50);
+`
+  );
+  chmodSync(bin, 0o755);
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  env.CLAUDE_BIN = bin;
+  const root = path.dirname(fileURLToPath(import.meta.url));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(root, "server.mjs")],
+    cwd: root,
+    env,
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "claude-subagent-test", version: "0.0.0" });
+  const notes = [];
+  try {
+    await client.connect(transport);
+    const result = await client.callTool(
+      {
+        name: "run_claude_subagent",
+        arguments: { prompt: "hi", cwd: dir, timeout_sec: 30, model: "haiku" },
+      },
+      undefined,
+      {
+        timeout: 10_000,
+        resetTimeoutOnProgress: true,
+        onprogress: (progress) => notes.push(progress),
+      }
+    );
+    assert.equal(result.isError, false);
+    assert.match(String(result.content?.[0]?.text), /pong/);
+    assert.ok(notes.length >= 1);
+    assert.equal(notes[0].progress, 1);
+    assert.equal(notes[0].message, "Claude Code is still running");
+  } finally {
+    await client.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function waitForFile(file) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      try {
+        const text = readFileSync(file, "utf8").trim();
+        if (text) {
+          clearInterval(timer);
+          resolve(text);
+        }
+      } catch {
+        if (Date.now() - startedAt > 4000) {
+          clearInterval(timer);
+          reject(new Error("child did not start"));
+        }
+      }
+    }, 20);
+  });
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

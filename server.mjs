@@ -1,11 +1,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { formatClaudeResult, MODEL_CHOICES, runClaude } from "./claude-run.mjs";
+import {
+  formatClaudeResult,
+  MODEL_CHOICES,
+  runClaude,
+  startProgressHeartbeat,
+} from "./claude-run.mjs";
 
 const server = new McpServer({
   name: "claude-subagent",
-  version: "1.2.0",
+  version: "1.2.1",
 });
 
 server.registerTool(
@@ -18,6 +23,7 @@ server.registerTool(
       "mode=read (default) can Read, Grep, Glob, and search or fetch the web. mode=edit can also Edit and Write inside cwd.",
       "mode=shell can also run Bash. No mode can call MCP tools.",
       "Pass cwd as the absolute workspace root. The child does not see this chat, so put the task, file paths, and constraints in prompt.",
+      "The call stays open and reports progress until Claude exits. Do not start another call because this one is quiet.",
       "Use resume with the returned session_id to continue that session.",
     ].join(" "),
     inputSchema: z.object({
@@ -63,11 +69,19 @@ server.registerTool(
         .describe("Wall clock limit from 30 to 300. Default 180."),
     }),
   },
-  async (args) => {
+  async (args, extra) => {
+    const stopHeartbeat = startProgressHeartbeat({
+      progressToken: extra?._meta?.progressToken,
+      sendNotification: (notification) => extra.sendNotification(notification),
+    });
     try {
-      const run = await runClaude(args);
+      const run = await runClaude(args, { signal: extra?.signal });
       const failed =
-        run.isError || run.timedOut || run.exitCode !== 0 || !run.parsed;
+        run.isError ||
+        run.timedOut ||
+        run.cancelled ||
+        run.exitCode !== 0 ||
+        !run.parsed;
       return {
         isError: failed,
         content: [{ type: "text", text: formatClaudeResult(run) }],
@@ -82,6 +96,8 @@ server.registerTool(
           },
         ],
       };
+    } finally {
+      stopHeartbeat();
     }
   }
 );

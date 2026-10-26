@@ -31,6 +31,9 @@ const MAX_BUDGET = 8;
 const DEFAULT_TIMEOUT_SEC = 180;
 const MIN_TIMEOUT_SEC = 30;
 const MAX_TIMEOUT_SEC = 300;
+// Cursor treats a silent MCP call as idle after 120s and resets that clock
+// on notifications/progress. Stay well under the idle window.
+export const PROGRESS_INTERVAL_MS = 15_000;
 
 export function assertClaudeVersion(versionText) {
   const match = String(versionText).match(/(\d+)\.(\d+)\.(\d+)/);
@@ -204,17 +207,57 @@ async function loadClaudeBin(env) {
   return { bin, version };
 }
 
+export function startProgressHeartbeat({
+  progressToken,
+  sendNotification,
+  intervalMs = PROGRESS_INTERVAL_MS,
+}) {
+  if (typeof sendNotification !== "function") return () => {};
+  if (typeof progressToken !== "string" && typeof progressToken !== "number") {
+    return () => {};
+  }
+  if (progressToken === "") return () => {};
+  let progress = 0;
+  let stopped = false;
+  const beat = () => {
+    if (stopped) return;
+    progress += 1;
+    try {
+      void Promise.resolve(
+        sendNotification({
+          method: "notifications/progress",
+          params: {
+            progressToken,
+            progress,
+            message: "Claude Code is still running",
+          },
+        })
+      ).catch(() => {});
+    } catch {
+      // A thrown send must not take down the interval.
+    }
+  };
+  beat();
+  const timer = setInterval(beat, intervalMs);
+  if (typeof timer.unref === "function") timer.unref();
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 export async function runClaude(raw, options = {}) {
   const request = await normalizeRequest(raw, options);
   const { bin, version } = await resolveClaudeBin(options.env);
   const args = buildClaudeArgs(request);
   const childEnv = stripBillingEnv(options.env ?? process.env);
-  const { stdout, stderr, exitCode, timedOut } = await spawnClaude({
+  const { stdout, stderr, exitCode, timedOut, cancelled } = await spawnClaude({
     bin,
     args,
     cwd: request.cwd,
     env: childEnv,
     timeoutMs: request.timeoutSec * 1000,
+    signal: options.signal,
   });
 
   const parsed = parseClaudeResult(stdout);
@@ -222,6 +265,7 @@ export async function runClaude(raw, options = {}) {
     ...parsed,
     exitCode,
     timedOut,
+    cancelled,
     stderr: stderr.trim(),
     claudeVersion: version,
     mode: request.mode,
@@ -229,8 +273,18 @@ export async function runClaude(raw, options = {}) {
   };
 }
 
-function spawnClaude({ bin, args, cwd, env, timeoutMs }) {
+export function spawnClaude({ bin, args, cwd, env, timeoutMs, signal }) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      resolve({
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+        timedOut: false,
+        cancelled: true,
+      });
+      return;
+    }
     const child = spawn(bin, args, {
       cwd,
       env,
@@ -238,12 +292,38 @@ function spawnClaude({ bin, args, cwd, env, timeoutMs }) {
     });
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2000).unref();
-    }, timeoutMs);
+    let stopReason = null;
+    const requestStop = (reason) => {
+      if (stopReason || child.exitCode != null) return;
+      stopReason = reason;
+      clearTimeout(timer);
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // The process already exited.
+      }
+      const killer = setTimeout(() => {
+        if (child.exitCode == null) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // The process already exited.
+          }
+        }
+      }, 2000);
+      killer.unref();
+    };
+    const timer = setTimeout(() => requestStop("timeout"), timeoutMs);
+    const onAbort = () => requestStop("cancel");
+    signal?.addEventListener("abort", onAbort, { once: true });
+    let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -253,12 +333,18 @@ function spawnClaude({ bin, args, cwd, env, timeoutMs }) {
       stderr += chunk;
     });
     child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
+      finish(() => reject(err));
     });
     child.on("close", (exitCode) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: exitCode ?? 1, timedOut });
+      finish(() =>
+        resolve({
+          stdout,
+          stderr,
+          exitCode: exitCode ?? 1,
+          timedOut: stopReason === "timeout",
+          cancelled: stopReason === "cancel",
+        })
+      );
     });
   });
 }
@@ -311,6 +397,7 @@ export function formatClaudeResult(run) {
   if (denials.length) {
     lines.push(`permission_denials: ${JSON.stringify(denials)}`);
   }
+  if (run.cancelled) lines.push("cancelled: true");
   if (run.timedOut) lines.push("timed_out: true");
   if (run.exitCode !== 0) lines.push(`exit_code: ${run.exitCode}`);
   if (run.stderr) lines.push(`stderr: ${run.stderr.slice(-2000)}`);

@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
+import os from "node:os";
 import { promisify } from "node:util";
 import path from "node:path";
 
@@ -34,17 +35,30 @@ const MAX_TIMEOUT_SEC = 300;
 // Cursor treats a silent MCP call as idle after 120s and resets that clock
 // on notifications/progress. Stay well under the idle window.
 export const PROGRESS_INTERVAL_MS = 15_000;
+// --permission-prompts arrived in 2.1.259. --restricted arrived in 2.1.248.
+export const MIN_CLAUDE_VERSION = [2, 1, 259];
+const STDIO_GRACE_MS = 1000;
+const KILL_GRACE_MS = 2000;
+const STOP_GIVE_UP_MS = 5000;
 
 export function assertClaudeVersion(versionText) {
   const match = String(versionText).match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match || Number(match[1]) < 2) {
+  const parts = match ? match.slice(1, 4).map(Number) : [];
+  if (parts.length !== 3 || isOlderVersion(parts, MIN_CLAUDE_VERSION)) {
     throw new Error(
-      `claude ${String(
-        versionText
-      ).trim()} is too old. Install with: brew install --cask claude-code@latest`
+      `claude ${String(versionText).trim()} is too old. Claude Code ${MIN_CLAUDE_VERSION.join(
+        "."
+      )} or newer is required. Install with: brew install --cask claude-code@latest`
     );
   }
   return match[0];
+}
+
+function isOlderVersion(parts, minimum) {
+  for (let i = 0; i < minimum.length; i += 1) {
+    if (parts[i] !== minimum[i]) return parts[i] < minimum[i];
+  }
+  return false;
 }
 
 export function resolveModelId(model) {
@@ -71,7 +85,6 @@ export function buildClaudeArgs(input) {
   const mode = input.mode;
   const args = [
     "-p",
-    input.prompt,
     "--model",
     resolveModelId(input.model),
     "--output-format",
@@ -94,6 +107,8 @@ export function buildClaudeArgs(input) {
   );
   if (input.resume) args.push("--resume", input.resume);
   for (const dir of input.addDirs) args.push("--add-dir", dir);
+  // The prompt is positional. A leading "--" must not become a CLI flag.
+  args.push("--", input.prompt);
   return args;
 }
 
@@ -140,14 +155,16 @@ export async function normalizeRequest(raw, options = {}) {
     );
   }
 
-  const cwd = await existingDirectory(
-    raw.cwd ?? options.cwd ?? process.cwd(),
-    "cwd"
-  );
+  const cwdInput = raw.cwd ?? options.cwd;
+  if ((mode === "edit" || mode === "shell") && (cwdInput == null || cwdInput === "")) {
+    throw new Error("cwd is required for edit and shell");
+  }
+  const cwd = await existingDirectory(cwdInput ?? process.cwd(), "cwd");
+  if (mode === "edit" || mode === "shell") await assertProjectCwd(cwd);
   const addDirs = [];
   for (const entry of raw.paths ?? []) {
     const dir = await existingDirectory(entry, "paths entry", {
-      allowFile: true,
+      allowFile: mode === "read",
     });
     if (dir !== cwd && !addDirs.includes(dir)) addDirs.push(dir);
   }
@@ -162,6 +179,15 @@ export async function normalizeRequest(raw, options = {}) {
     cwd,
     addDirs,
   };
+}
+
+async function assertProjectCwd(cwd) {
+  const home = await realpath(os.homedir());
+  if (cwd === path.parse(cwd).root || cwd === home) {
+    throw new Error(
+      "cwd for edit and shell must be a project directory, not / or your home directory"
+    );
+  }
 }
 
 async function existingDirectory(input, label, { allowFile = false } = {}) {
@@ -288,42 +314,56 @@ export function spawnClaude({ bin, args, cwd, env, timeoutMs, signal }) {
     const child = spawn(bin, args, {
       cwd,
       env,
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
     let stopReason = null;
-    const requestStop = (reason) => {
-      if (stopReason || child.exitCode != null) return;
-      stopReason = reason;
-      clearTimeout(timer);
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // The process already exited.
-      }
-      const killer = setTimeout(() => {
-        if (child.exitCode == null) {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // The process already exited.
-          }
-        }
-      }, 2000);
-      killer.unref();
-    };
-    const timer = setTimeout(() => requestStop("timeout"), timeoutMs);
-    const onAbort = () => requestStop("cancel");
-    signal?.addEventListener("abort", onAbort, { once: true });
     let settled = false;
+    let graceTimer;
+    let giveUpTimer;
+    const result = (exitCode = child.exitCode ?? 1) => ({
+      stdout,
+      stderr,
+      exitCode,
+      timedOut: stopReason === "timeout",
+      cancelled: stopReason === "cancel",
+    });
+    const onParentExit = () => killGroup(child, "SIGKILL");
+    process.on("exit", onParentExit);
     const finish = (fn) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
+      clearTimeout(giveUpTimer);
       signal?.removeEventListener("abort", onAbort);
+      process.removeListener("exit", onParentExit);
       fn();
     };
+    const dropPipes = () => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+    const requestStop = (reason) => {
+      if (stopReason || settled || child.exitCode != null) return;
+      stopReason = reason;
+      clearTimeout(timer);
+      killGroup(child, "SIGTERM");
+      const killer = setTimeout(() => {
+        if (!settled && child.exitCode == null) killGroup(child, "SIGKILL");
+      }, KILL_GRACE_MS);
+      killer.unref();
+      giveUpTimer = setTimeout(() => {
+        dropPipes();
+        finish(() => resolve(result()));
+      }, STOP_GIVE_UP_MS);
+      giveUpTimer.unref();
+    };
+    const timer = setTimeout(() => requestStop("timeout"), timeoutMs);
+    const onAbort = () => requestStop("cancel");
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -335,18 +375,35 @@ export function spawnClaude({ bin, args, cwd, env, timeoutMs, signal }) {
     child.on("error", (err) => {
       finish(() => reject(err));
     });
+    child.on("exit", () => {
+      if (settled || graceTimer) return;
+      graceTimer = setTimeout(() => {
+        dropPipes();
+        finish(() => resolve(result()));
+      }, STDIO_GRACE_MS);
+      graceTimer.unref();
+    });
     child.on("close", (exitCode) => {
-      finish(() =>
-        resolve({
-          stdout,
-          stderr,
-          exitCode: exitCode ?? 1,
-          timedOut: stopReason === "timeout",
-          cancelled: stopReason === "cancel",
-        })
-      );
+      finish(() => resolve(result(exitCode ?? 1)));
     });
   });
+}
+
+function killGroup(child, signal) {
+  if (child.pid == null) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // The process has no group yet, or it is already gone.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // The process already exited.
+  }
 }
 
 export function parseClaudeResult(stdout) {

@@ -10,7 +10,7 @@ import {
 
 const server = new McpServer({
   name: "claude-subagent",
-  version: "1.2.1",
+  version: "1.2.2",
 });
 
 server.registerTool(
@@ -39,12 +39,14 @@ server.registerTool(
       cwd: z
         .string()
         .optional()
-        .describe("Absolute working directory, usually the workspace root."),
+        .describe(
+          "Absolute working directory. Required for edit and shell. Cannot be / or your home directory."
+        ),
       paths: z
         .array(z.string())
         .optional()
         .describe(
-          "Extra absolute files or directories the file tools may use."
+          "Extra absolute directories. In read mode, a file path allows that file's directory. edit and shell accept directories only."
         ),
       model: z
         .enum(MODEL_CHOICES)

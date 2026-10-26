@@ -20,7 +20,7 @@ It is not a way to put a Claude subscription behind Cursor's own model picker.
 | `edit` | no | Those reads and web lookups, plus Edit and Write inside the working directory | Run a shell, call MCP tools |
 | `shell` | no | Those edits, plus Bash | Call MCP tools |
 
-The child does not see the parent chat. Put the task, the file paths, and the limits in `prompt`. Pass `cwd` as the absolute workspace root.
+The child does not see the parent chat. Put the task, the file paths, and the limits in `prompt`. Pass `cwd` as the absolute workspace root. `edit` and `shell` require `cwd`, and that directory cannot be `/` or your home directory. `paths` for those modes must be directories you name. In `read` mode, a file path allows that file's directory, because the file tools are scoped to directories.
 
 A headless run cannot show a permission dialog. Read mode denies anything that would have prompted, except web search and fetch, which are pre-approved. Edit mode auto-approves file edits inside `cwd` and the extra directories in `paths`. Shell mode also runs Bash, so one approved call can execute commands, including commands that read files outside the workspace or reach the network. Every mode can search the web and fetch a page. A fetch can include text from the workspace in the request. MCP tools are not offered in any mode. The session skips personal and project Claude Code customizations (hooks, skills, MCP servers, and saved allow rules). The Claude login is still used.
 
@@ -37,7 +37,7 @@ Full ids (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fa
 
 Each call returns the result text, a `session_id`, the model that ran, and an estimated cost. Pass that `session_id` as `resume` to continue the same session. `max_budget_usd` stops the run at an estimated spend from 0.25 to 8 (default 1.5 for read, 4 for edit and shell). `timeout_sec` is the wall clock limit from 30 to 300 (default 180).
 
-While the session runs, the server sends a progress update every 15 seconds. Clients such as Cursor reset their idle timer on that update, so a quiet review can finish instead of being dropped at 2 minutes. If the caller cancels, the Claude process is stopped.
+While the session runs, the server sends a progress update every 15 seconds. Clients such as Cursor reset their idle timer on that update, so a quiet review can finish instead of being dropped at 2 minutes. The prompt is passed after `--`, so a task that starts with dashes is text, not a Claude Code flag. If the caller cancels, the Claude process and anything it started in that process group are stopped. If a leftover process still holds the output pipe, the call ends anyway.
 
 The parent approves this one MCP call. After the process starts, Cursor does not see each file read or edit. Those follow the fence above.
 
@@ -46,7 +46,7 @@ The parent approves this one MCP call. After the process starts, Cursor does not
 You need:
 
 - Node.js 20 or newer
-- Claude Code 2.x on your `PATH` (`claude --version`)
+- Claude Code 2.1.259 or newer on your `PATH` (`claude --version`)
 - A Claude subscription that includes Claude Code, already logged in
 
 Install Claude Code, then log in once in a terminal and confirm the subscription login:

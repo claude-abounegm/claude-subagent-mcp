@@ -65,6 +65,25 @@ test("edit mode adds file writes and still omits Bash", () => {
   assert.equal(args.join(" ").includes("Bash"), false);
 });
 
+test("shell mode can run Bash and still refuses bypass", () => {
+  const args = buildClaudeArgs({
+    mode: "shell",
+    prompt: "Run the tests",
+    model: "haiku",
+    maxBudgetUsd: 4,
+    addDirs: [],
+  });
+  assert.equal(
+    args[args.indexOf("--tools") + 1],
+    "Read,Grep,Glob,Edit,Write,Bash"
+  );
+  assert.equal(args[args.indexOf("--allowedTools") + 1], "Bash");
+  assert.ok(args.includes("acceptEdits"));
+  assert.equal(args.includes("bypassPermissions"), false);
+  assert.equal(args.includes("--bare"), false);
+  assert.equal(args.includes("--dangerously-skip-permissions"), false);
+});
+
 test("pins the current model ids", () => {
   assert.equal(resolveModelId("haiku"), "claude-haiku-5-5");
   assert.equal(resolveModelId("fable"), "claude-fable-5-1");

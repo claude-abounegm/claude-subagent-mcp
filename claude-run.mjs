@@ -7,6 +7,7 @@ const execFileAsync = promisify(execFile);
 
 const READ_TOOLS = "Read,Grep,Glob";
 const EDIT_TOOLS = "Read,Grep,Glob,Edit,Write";
+const SHELL_TOOLS = "Read,Grep,Glob,Edit,Write,Bash";
 // Aliases are pinned to the current ids. The bare `opus` alias can land on Opus 4.8.
 export const MODEL_IDS = {
   opus: "claude-opus-5-5",
@@ -23,7 +24,7 @@ const BILLING_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const DEFAULT_BUDGET = { read: 1.5, edit: 4 };
+const DEFAULT_BUDGET = { read: 1.5, edit: 4, shell: 4 };
 const MIN_BUDGET = 0.25;
 const MAX_BUDGET = 8;
 const DEFAULT_TIMEOUT_SEC = 180;
@@ -56,6 +57,12 @@ export function stripBillingEnv(env) {
   return next;
 }
 
+export function toolsForMode(mode) {
+  if (mode === "shell") return SHELL_TOOLS;
+  if (mode === "edit") return EDIT_TOOLS;
+  return READ_TOOLS;
+}
+
 export function buildClaudeArgs(input) {
   const mode = input.mode;
   const args = [
@@ -66,17 +73,18 @@ export function buildClaudeArgs(input) {
     "--output-format",
     "json",
     "--permission-mode",
-    mode === "edit" ? "acceptEdits" : "dontAsk",
+    mode === "read" ? "dontAsk" : "acceptEdits",
     "--permission-prompts",
     "none",
     "--safe-mode",
     "--restricted",
     "--strict-mcp-config",
     "--tools",
-    mode === "edit" ? EDIT_TOOLS : READ_TOOLS,
+    toolsForMode(mode),
     "--max-budget-usd",
     String(input.maxBudgetUsd),
   ];
+  if (mode === "shell") args.push("--allowedTools", "Bash");
   if (input.resume) args.push("--resume", input.resume);
   for (const dir of input.addDirs) args.push("--add-dir", dir);
   return args;
@@ -84,8 +92,8 @@ export function buildClaudeArgs(input) {
 
 export async function normalizeRequest(raw, options = {}) {
   const mode = raw.mode ?? "read";
-  if (mode !== "read" && mode !== "edit") {
-    throw new Error('mode must be "read" or "edit"');
+  if (mode !== "read" && mode !== "edit" && mode !== "shell") {
+    throw new Error('mode must be "read", "edit", or "shell"');
   }
   const prompt = typeof raw.prompt === "string" ? raw.prompt.trim() : "";
   if (!prompt) throw new Error("prompt is required");

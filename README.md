@@ -18,10 +18,11 @@ It is not a way to put a Claude subscription behind Cursor's own model picker.
 | --- | --- | --- | --- |
 | `read` | yes | Read, Grep, and Glob inside the working directory | Edit files, run a shell, fetch the web, call MCP tools |
 | `edit` | no | Those reads, plus Edit and Write inside the working directory | Run a shell, fetch the web, call MCP tools |
+| `shell` | no | Those edits, plus Bash | Fetch the web, call MCP tools |
 
 The child does not see the parent chat. Put the task, the file paths, and the limits in `prompt`. Pass `cwd` as the absolute workspace root.
 
-A headless run cannot show a permission dialog. Read mode denies anything that would have prompted. Edit mode auto-approves file edits inside `cwd` and the extra directories in `paths`. Shell, web, and MCP tools are not offered in either mode. The session also skips personal and project Claude Code customizations (hooks, skills, MCP servers, and saved allow rules) so a wide allow rule on the machine does not open the fence. The Claude login is still used.
+A headless run cannot show a permission dialog. Read mode denies anything that would have prompted. Edit mode auto-approves file edits inside `cwd` and the extra directories in `paths`. Shell mode also runs Bash, so one approved call can execute commands, including commands that read files outside the workspace or reach the network. Web and MCP tools are not offered in any mode. The session skips personal and project Claude Code customizations (hooks, skills, MCP servers, and saved allow rules). The Claude login is still used.
 
 `opus` is sent as Claude Opus 5.5. The bare `opus` alias in Claude Code can land on an older Opus. `sonnet`, `haiku`, and `fable` are pinned the same way:
 
@@ -34,7 +35,7 @@ A headless run cannot show a permission dialog. Read mode denies anything that w
 
 Full ids (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`) are accepted too. Your plan has to include the model. If it does not, Claude Code returns an error and this server passes that error back.
 
-Each call returns the result text, a `session_id`, the model that ran, and an estimated cost. Pass that `session_id` as `resume` to continue the same session. `max_budget_usd` stops the run at an estimated spend from 0.25 to 8 (default 1.5 for read, 4 for edit). `timeout_sec` is the wall clock limit from 30 to 300 (default 180).
+Each call returns the result text, a `session_id`, the model that ran, and an estimated cost. Pass that `session_id` as `resume` to continue the same session. `max_budget_usd` stops the run at an estimated spend from 0.25 to 8 (default 1.5 for read, 4 for edit and shell). `timeout_sec` is the wall clock limit from 30 to 300 (default 180).
 
 The parent approves this one MCP call. After the process starts, Cursor does not see each file read or edit. Those follow the fence above.
 
@@ -118,7 +119,7 @@ A read-only handoff from the parent agent:
 }
 ```
 
-Use `mode: "edit"` only when that slice is supposed to change files. This server never adds a shell. If the task needs a command, run it in the parent agent.
+Use `mode: "edit"` when that slice is supposed to change files without running commands. Use `mode: "shell"` when it needs Bash. The parent approves that choice once, and the commands then run without another prompt.
 
 ## License
 

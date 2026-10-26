@@ -5,7 +5,7 @@ import { formatClaudeResult, MODEL_CHOICES, runClaude } from "./claude-run.mjs";
 
 const server = new McpServer({
   name: "claude-subagent",
-  version: "1.1.0",
+  version: "1.2.0",
 });
 
 server.registerTool(
@@ -15,8 +15,8 @@ server.registerTool(
     description: [
       "Run a scoped Claude Code session on the signed-in Claude subscription (Opus by default).",
       "This does not use Cursor model credits.",
-      "mode=read (default) can Read, Grep, and Glob. mode=edit can also Edit and Write inside cwd.",
-      "mode=shell can also run Bash. No mode can fetch the web or call MCP tools.",
+      "mode=read (default) can Read, Grep, Glob, and search or fetch the web. mode=edit can also Edit and Write inside cwd.",
+      "mode=shell can also run Bash. No mode can call MCP tools.",
       "Pass cwd as the absolute workspace root. The child does not see this chat, so put the task, file paths, and constraints in prompt.",
       "Use resume with the returned session_id to continue that session.",
     ].join(" "),
@@ -28,7 +28,7 @@ server.registerTool(
         .enum(["read", "edit", "shell"])
         .optional()
         .describe(
-          "read is the default. edit may change files under cwd. shell may also run Bash. No mode can fetch the web or call MCP tools."
+          "read is the default. edit may change files under cwd. shell may also run Bash. Every mode can search and fetch the web. No mode can call MCP tools."
         ),
       cwd: z
         .string()
@@ -50,7 +50,7 @@ server.registerTool(
         .number()
         .optional()
         .describe(
-          "Estimated spend cap from 0.25 to 8. Default 1.5 for read and 4 for edit."
+          "Estimated spend cap from 0.25 to 8. Default 1.5 for read and 4 for edit and shell."
         ),
       resume: z
         .string()

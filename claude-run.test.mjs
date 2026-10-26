@@ -38,7 +38,14 @@ test("read mode cannot name Bash, Edit, or bypass", () => {
   assert.ok(args.includes("--safe-mode"));
   assert.ok(args.includes("--strict-mcp-config"));
   assert.ok(args.includes("dontAsk"));
-  assert.equal(args[args.indexOf("--tools") + 1], "Read,Grep,Glob");
+  assert.equal(
+    args[args.indexOf("--tools") + 1],
+    "Read,Grep,Glob,WebFetch,WebSearch"
+  );
+  assert.equal(
+    args[args.indexOf("--allowedTools") + 1],
+    "WebFetch,WebSearch"
+  );
   assert.equal(args.includes("bypassPermissions"), false);
   assert.equal(args.includes("--bare"), false);
   assert.equal(args.includes("--dangerously-skip-permissions"), false);
@@ -55,7 +62,14 @@ test("edit mode adds file writes and still omits Bash", () => {
     addDirs: ["/tmp/cc-probe"],
   });
   assert.ok(args.includes("acceptEdits"));
-  assert.equal(args[args.indexOf("--tools") + 1], "Read,Grep,Glob,Edit,Write");
+  assert.equal(
+    args[args.indexOf("--tools") + 1],
+    "Read,Grep,Glob,Edit,Write,WebFetch,WebSearch"
+  );
+  assert.equal(
+    args[args.indexOf("--allowedTools") + 1],
+    "WebFetch,WebSearch"
+  );
   assert.equal(
     args[args.indexOf("--resume") + 1],
     "8898fedb-1457-4c8f-ba3a-4172f100c3bd"
@@ -75,9 +89,12 @@ test("shell mode can run Bash and still refuses bypass", () => {
   });
   assert.equal(
     args[args.indexOf("--tools") + 1],
-    "Read,Grep,Glob,Edit,Write,Bash"
+    "Read,Grep,Glob,Edit,Write,Bash,WebFetch,WebSearch"
   );
-  assert.equal(args[args.indexOf("--allowedTools") + 1], "Bash");
+  assert.equal(
+    args[args.indexOf("--allowedTools") + 1],
+    "Bash,WebFetch,WebSearch"
+  );
   assert.ok(args.includes("acceptEdits"));
   assert.equal(args.includes("bypassPermissions"), false);
   assert.equal(args.includes("--bare"), false);

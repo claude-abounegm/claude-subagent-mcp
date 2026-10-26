@@ -16,13 +16,13 @@ It is not a way to put a Claude subscription behind Cursor's own model picker.
 
 | Mode | Default | Can do | Cannot do |
 | --- | --- | --- | --- |
-| `read` | yes | Read, Grep, and Glob inside the working directory | Edit files, run a shell, fetch the web, call MCP tools |
-| `edit` | no | Those reads, plus Edit and Write inside the working directory | Run a shell, fetch the web, call MCP tools |
-| `shell` | no | Those edits, plus Bash | Fetch the web, call MCP tools |
+| `read` | yes | Read, Grep, and Glob inside the working directory, and search or fetch the web | Edit files, run a shell, call MCP tools |
+| `edit` | no | Those reads and web lookups, plus Edit and Write inside the working directory | Run a shell, call MCP tools |
+| `shell` | no | Those edits, plus Bash | Call MCP tools |
 
 The child does not see the parent chat. Put the task, the file paths, and the limits in `prompt`. Pass `cwd` as the absolute workspace root.
 
-A headless run cannot show a permission dialog. Read mode denies anything that would have prompted. Edit mode auto-approves file edits inside `cwd` and the extra directories in `paths`. Shell mode also runs Bash, so one approved call can execute commands, including commands that read files outside the workspace or reach the network. Web and MCP tools are not offered in any mode. The session skips personal and project Claude Code customizations (hooks, skills, MCP servers, and saved allow rules). The Claude login is still used.
+A headless run cannot show a permission dialog. Read mode denies anything that would have prompted, except web search and fetch, which are pre-approved. Edit mode auto-approves file edits inside `cwd` and the extra directories in `paths`. Shell mode also runs Bash, so one approved call can execute commands, including commands that read files outside the workspace or reach the network. Every mode can search the web and fetch a page. A fetch can include text from the workspace in the request. MCP tools are not offered in any mode. The session skips personal and project Claude Code customizations (hooks, skills, MCP servers, and saved allow rules). The Claude login is still used.
 
 `opus` is sent as Claude Opus 5.5. The bare `opus` alias in Claude Code can land on an older Opus. `sonnet`, `haiku`, and `fable` are pinned the same way:
 

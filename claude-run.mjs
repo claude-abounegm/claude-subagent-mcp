@@ -5,9 +5,10 @@ import path from "node:path";
 
 const execFileAsync = promisify(execFile);
 
-const READ_TOOLS = "Read,Grep,Glob";
-const EDIT_TOOLS = "Read,Grep,Glob,Edit,Write";
-const SHELL_TOOLS = "Read,Grep,Glob,Edit,Write,Bash";
+const WEB_TOOLS = "WebFetch,WebSearch";
+const READ_TOOLS = `Read,Grep,Glob,${WEB_TOOLS}`;
+const EDIT_TOOLS = `Read,Grep,Glob,Edit,Write,${WEB_TOOLS}`;
+const SHELL_TOOLS = `Read,Grep,Glob,Edit,Write,Bash,${WEB_TOOLS}`;
 // Aliases are pinned to the current ids. The bare `opus` alias can land on Opus 4.8.
 export const MODEL_IDS = {
   opus: "claude-opus-5-5",
@@ -84,7 +85,10 @@ export function buildClaudeArgs(input) {
     "--max-budget-usd",
     String(input.maxBudgetUsd),
   ];
-  if (mode === "shell") args.push("--allowedTools", "Bash");
+  args.push(
+    "--allowedTools",
+    mode === "shell" ? `Bash,${WEB_TOOLS}` : WEB_TOOLS
+  );
   if (input.resume) args.push("--resume", input.resume);
   for (const dir of input.addDirs) args.push("--add-dir", dir);
   return args;
